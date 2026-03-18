@@ -1,0 +1,64 @@
+name: UAT Deployment
+on:
+  workflow_dispatch:
+  
+jobs:
+  build:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      - name: Configure AWS Credentials
+        id: aws_credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ vars.AWS_IAM_ROLE_ARN }}
+          role-session-name: GitHubActionsSession
+          aws-region: "ap-southeast-5"
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ap-southeast-5 | docker login --username AWS --password-stdin ${{ vars.AWS_ECR_URL }}
+      - name: Build Image
+        run: |-
+          docker build \
+          -t ${{ vars.AWS_ECR_URL }}:${{ github.sha }} . --build-arg ENV=uat
+      - name: Push Image
+        run: |-
+          docker push ${{ vars.AWS_ECR_URL }}:${{ github.sha }}
+  deploy:
+    name: Update deployment manifest
+    needs: build
+    environment: uat
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get image tag
+        run: |
+          echo "IMAGE_TAG=${{ vars.AWS_ECR_URL }}:${{ github.sha }}" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
+        with:
+          repository: NXT-Asseto/gitops
+          token: ${{ secrets.GH_PAT }}
+          path: gitops
+          fetch-depth: 1
+
+      - name: Update deployment manifest
+        uses: fjogeleit/yaml-update-action@v0.13.2
+        with:
+          valueFile: "apps/workorder-service/overlays/dev/deployment-patch.yaml"
+          repository: NXT-Asseto/gitops
+          message: "chore(deploy): Update image to (${{ env.IMAGE_TAG }})"
+          createPR: false
+          branch: aws-uat
+          targetBranch: aws-uat
+          token: ${{ secrets.GH_PAT }}
+          workDir: gitops
+          changes: |
+            {
+              "spec.template.spec.containers[0].image": "${{ env.IMAGE_TAG }}"
+            }
+# reference:
+# https://github.com/Shaik-DevOpsLucky/terraform/blob/dev/workflow-deployment.yaml.txt
